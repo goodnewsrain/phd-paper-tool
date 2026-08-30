@@ -214,15 +214,19 @@ SUMMARY_SCHEMA = {
         "problem": {"type": "string"},
         "method": {"type": "string"},
         "key_findings": {"type": "string"},
-        "limitations": {"type": "string"},
-        "relevance": {"type": "string"},
+        "contribution": {"type": "string"},
+        "critical_appraisal": {"type": "string"},
+        "use_in_my_work": {"type": "string"},
+        "verdict": {"type": "string"},
         "relevance_rating": {"type": "string", "enum": ["High", "Medium", "Low"]},
+        "engagement": {"type": "string", "enum": ["Deep read", "Cite", "Skim"]},
         "keywords": {"type": "array", "items": {"type": "string"}},
     },
     "required": [
         "title", "authors", "year", "venue", "tldr",
-        "problem", "method", "key_findings", "limitations",
-        "relevance", "relevance_rating", "keywords",
+        "problem", "method", "key_findings",
+        "contribution", "critical_appraisal", "use_in_my_work", "verdict",
+        "relevance_rating", "engagement", "keywords",
     ],
     "additionalProperties": False,
 }
@@ -249,28 +253,38 @@ def _build_prompt(language: str, abstract: str | None, research_profile: str) ->
     lang_name = "Korean" if language == "ko" else "English"
 
     profile_block = (
-        f"\nThe student's own research focus — judge relevance against THIS:\n"
+        f"\nThe student's research program — evaluate EVERY paper in service of THIS:\n"
         f"<research_profile>\n{research_profile}\n</research_profile>\n"
         if research_profile
         else ""
     )
 
-    base = f"""You are helping a PhD student build a rigorous literature review.
+    base = f"""You are a demanding doctoral committee CHAIR in a Leadership, Equity, and Inquiry (LEI) PhD program, reviewing this paper for one of your doctoral students. Adopt the stance of a sharp, rigorous examiner — NOT a cheerleader.
 
-Read the attached paper carefully and produce a structured summary.
+Read the attached paper closely and produce a critical review.
 {profile_block}
-Rules:
-- Write the summary fields (tldr, problem, method, key_findings, limitations, relevance) in {lang_name}.
-- Keep bibliographic fields (title, authors, venue) in the paper's ORIGINAL language — do not translate them.
-- Be concrete and specific: name the actual methods, datasets, baselines, and numbers. Avoid vague filler.
-- Be critical in "limitations": state real weaknesses, not boilerplate.
-- "relevance": explain SPECIFICALLY how this paper relates to the student's research focus above — what they can draw from it (a concept, method, evidence, or useful counterpoint), or why it is only tangential. Be honest when it is not closely related.
-- "relevance_rating": rate the paper's relevance to the student's research focus. Exactly one of "High", "Medium", "Low". If no research focus is given, rate general academic significance.
-- "keywords": 3-6 short topical tags (single words or short phrases, no commas inside a tag). Prefer terms that connect to the student's field when accurate to the paper.
+Stance:
+- Do NOT praise reflexively. Credit genuine strengths precisely, but expose weaknesses, unexamined assumptions, methodological flaws, weak or thin evidence, and overclaims plainly and without softening.
+- Every judgment must be SPECIFIC and grounded in what the paper actually does — name the method, the data, the claim. No vague or generic criticism, no boilerplate.
+- Always evaluate the paper in service of the student's research program above.
+- Write the evaluative fields in {lang_name}. Keep bibliographic fields (title, authors, venue) in the paper's ORIGINAL language — do not translate them.
+
+Fields:
+- tldr: one or two sentences — what the paper is and does.
+- problem: the research problem / question.
+- method: methods, data, sample, and analysis — concretely.
+- key_findings: the main results / claims, with specifics (numbers, cases).
+- contribution: is the contribution genuinely NOVEL and significant, or incremental / derivative / a repackaging of existing work? Be blunt.
+- critical_appraisal: your SHARP critique — the real methodological, theoretical, and evidentiary weaknesses; blind spots; unexamined assumptions; where the claims outrun the evidence. Point to what in the paper. This is the heart of the review.
+- use_in_my_work: what the student should actually DO with it — build on it / argue against it / borrow only the method / cite-and-move-past — tied to their specific research questions. Also name the GAP it leaves open that the student's own work could fill.
+- verdict: your candid overall judgment as chair, in one sharp paragraph — how rigorous is it, how much does it actually deliver, and is it worth the student's time.
+- relevance_rating: relevance to the student's research program — exactly one of "High", "Medium", "Low".
+- engagement: what the student should do with it — exactly one of "Deep read" (worth close study), "Cite" (cite and move on), "Skim" (low priority).
+- keywords: 3-6 short topical tags (no commas inside a tag). Prefer terms that connect to the student's field when accurate to the paper.
 - If a field is genuinely unknown, use an empty string "".
 """
     if abstract:
-        base += f"\n\nThe full PDF was not available. Summarize from this abstract and metadata only, and keep the summary appropriately cautious:\n\n{abstract}"
+        base += f"\n\nThe full PDF was not available. Review from this abstract and metadata only, and be explicitly cautious about method/evidence claims you cannot verify from an abstract:\n\n{abstract}"
     return base
 
 
@@ -329,6 +343,15 @@ DB_PROPERTIES = {
                 {"name": "High", "color": "green"},
                 {"name": "Medium", "color": "yellow"},
                 {"name": "Low", "color": "gray"},
+            ]
+        }
+    },
+    "Engagement": {
+        "select": {
+            "options": [
+                {"name": "Deep read", "color": "red"},
+                {"name": "Cite", "color": "yellow"},
+                {"name": "Skim", "color": "gray"},
             ]
         }
     },
@@ -425,6 +448,9 @@ def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
     rating = summary.get("relevance_rating")
     if rating in ("High", "Medium", "Low"):
         properties["Relevance"] = {"select": {"name": rating}}
+    eng = summary.get("engagement")
+    if eng in ("Deep read", "Cite", "Skim"):
+        properties["Engagement"] = {"select": {"name": eng}}
 
     children: list = []
     if summary.get("tldr"):
@@ -432,8 +458,10 @@ def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
     children += _text_blocks("문제 (Problem)", summary.get("problem", ""))
     children += _text_blocks("방법 (Method)", summary.get("method", ""))
     children += _text_blocks("핵심 결과 (Key findings)", summary.get("key_findings", ""))
-    children += _text_blocks("한계 (Limitations)", summary.get("limitations", ""))
-    children += _text_blocks("내 연구와의 관련성 (Relevance)", summary.get("relevance", ""))
+    children += _text_blocks("기여도 (Contribution)", summary.get("contribution", ""))
+    children += _text_blocks("⚠️ 비판적 검토 (Critical appraisal)", summary.get("critical_appraisal", ""))
+    children += _text_blocks("내 연구에서의 활용 (Use in my work)", summary.get("use_in_my_work", ""))
+    children += _text_blocks("🎓 체어 총평 (Chair's verdict)", summary.get("verdict", ""))
 
     # ── 원문 섹션 (원문 링크 + PDF 첨부) ──
     original_blocks: list = []

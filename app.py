@@ -165,9 +165,14 @@ if go:
         if meta:
             st.caption(meta)
         rating = summary.get("relevance_rating")
+        eng = summary.get("engagement")
+        badges = []
         if rating:
-            label = {"High": "🟢 높음", "Medium": "🟡 중간", "Low": "⚪ 낮음"}.get(rating, rating)
-            st.markdown(f"**내 연구 관련도:** {label}")
+            badges.append("관련도: " + {"High": "🟢 높음", "Medium": "🟡 중간", "Low": "⚪ 낮음"}.get(rating, rating))
+        if eng:
+            badges.append("관여: " + {"Deep read": "📕 정독", "Cite": "📎 인용", "Skim": "💨 훑기"}.get(eng, eng))
+        if badges:
+            st.markdown("  ·  ".join(f"**{b}**" for b in badges))
         if summary.get("keywords"):
             st.write(" ".join(f"`{k}`" for k in summary["keywords"]))
         if summary.get("tldr"):
@@ -177,8 +182,10 @@ if go:
             ("문제 (Problem)", "problem"),
             ("방법 (Method)", "method"),
             ("핵심 결과 (Key findings)", "key_findings"),
-            ("한계 (Limitations)", "limitations"),
-            ("내 연구와의 관련성 (Relevance)", "relevance"),
+            ("기여도 (Contribution)", "contribution"),
+            ("⚠️ 비판적 검토 (Critical appraisal)", "critical_appraisal"),
+            ("내 연구에서의 활용 (Use in my work)", "use_in_my_work"),
+            ("🎓 체어 총평 (Chair's verdict)", "verdict"),
         ]
         for heading, key in sections:
             if summary.get(key):
