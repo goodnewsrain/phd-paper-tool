@@ -385,8 +385,22 @@ def _clean_tag(tag: str) -> str:
     return tag.replace(",", " ").strip()[:100]
 
 
-def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict, source_url: str) -> str:
-    """요약을 문헌 데이터소스에 새 페이지로 저장하고, 그 페이지 주소를 돌려줍니다."""
+def upload_pdf(notion: NotionClient, pdf_bytes: bytes, title: str = "paper") -> str:
+    """PDF를 Notion에 업로드하고 file_upload id를 돌려줍니다. (단일 파트, ~20MB 이하)"""
+    fname = (re.sub(r"[^\w\-]+", "_", title).strip("_")[:80] or "paper")
+    fu = notion.file_uploads.create(
+        mode="single_part", filename=f"{fname}.pdf", content_type="application/pdf"
+    )
+    notion.file_uploads.send(fu["id"], file=(f"{fname}.pdf", pdf_bytes, "application/pdf"))
+    return fu["id"]
+
+
+def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
+                   source_url: str, pdf_bytes: bytes | None = None) -> dict:
+    """요약을 문헌 데이터소스에 새 페이지로 저장하고, 그 페이지 객체를 돌려줍니다.
+
+    source_url 이 있으면 원문 링크(북마크)를, pdf_bytes 가 있으면 원문 PDF를 페이지에 첨부합니다.
+    """
     # 연도는 숫자로 변환 시도
     year_val = None
     try:
@@ -420,6 +434,24 @@ def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict, sou
     children += _text_blocks("핵심 결과 (Key findings)", summary.get("key_findings", ""))
     children += _text_blocks("한계 (Limitations)", summary.get("limitations", ""))
     children += _text_blocks("내 연구와의 관련성 (Relevance)", summary.get("relevance", ""))
+
+    # ── 원문 섹션 (원문 링크 + PDF 첨부) ──
+    original_blocks: list = []
+    if source_url:
+        original_blocks.append({"type": "bookmark", "bookmark": {"url": source_url}})
+    if pdf_bytes and len(pdf_bytes) <= 20 * 1024 * 1024:
+        try:
+            fid = upload_pdf(notion, pdf_bytes, summary.get("title") or "paper")
+            original_blocks.append(
+                {"type": "pdf", "pdf": {"type": "file_upload", "file_upload": {"id": fid}}}
+            )
+        except Exception:
+            pass  # 업로드 실패(용량 제한 등)해도 요약 저장은 계속
+    if original_blocks:
+        children.append({"type": "divider", "divider": {}})
+        children.append({"type": "heading_2", "heading_2": {
+            "rich_text": [{"type": "text", "text": {"content": "📄 원문 (Original)"}}]}})
+        children += original_blocks
 
     page = notion.pages.create(
         parent={"type": "data_source_id", "data_source_id": data_source_id},

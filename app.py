@@ -141,7 +141,8 @@ if go:
 
         with st.spinner("Notion에 저장하는 중…"):
             notion = core.make_notion_client(cfg["notion_token"])
-            page = core.save_to_notion(notion, db_id, summary, resolved.get("source_url", ""))
+            page = core.save_to_notion(notion, db_id, summary, resolved.get("source_url", ""),
+                                       pdf_bytes=resolved.get("pdf_bytes"))
             page_url = page.get("url", "")
 
         # 비슷한 논문 자동 연동
