@@ -23,7 +23,8 @@ st.set_page_config(page_title="논문 요약 → Notion", page_icon="📚", layo
 # (로컬에선 secrets 파일이 없으므로 그냥 넘어가고 .env 를 씁니다.)
 try:
     for _k in ["ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID", "NOTION_TOKEN",
-               "NOTION_PARENT_PAGE_ID", "NOTION_DATABASE_ID", "APP_PASSWORD"]:
+               "NOTION_PARENT_PAGE_ID", "NOTION_DATABASE_ID", "APP_PASSWORD",
+               "RESEARCH_PROFILE"]:
         if _k in st.secrets and st.secrets[_k]:
             os.environ[_k] = str(st.secrets[_k])
 except Exception:

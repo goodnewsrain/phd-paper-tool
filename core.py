@@ -229,7 +229,14 @@ SUMMARY_SCHEMA = {
 
 
 def load_research_profile() -> str:
-    """research_profile.md 를 읽어 요약 프롬프트에 넣습니다. 없으면 빈 문자열."""
+    """연구 프로필을 불러옵니다.
+
+    배포(공개 저장소) 환경에서는 RESEARCH_PROFILE 비밀값을 쓰고,
+    로컬에서는 research_profile.md 파일을 씁니다. (공개 저장소엔 연구요약을 안 남김)
+    """
+    env = os.environ.get("RESEARCH_PROFILE", "").strip()
+    if env:
+        return env
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "research_profile.md")
     try:
         with open(path, encoding="utf-8") as f:
