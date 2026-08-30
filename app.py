@@ -185,6 +185,7 @@ if go:
             ("기여도 (Contribution)", "contribution"),
             ("⚠️ 비판적 검토 (Critical appraisal)", "critical_appraisal"),
             ("내 연구에서의 활용 (Use in my work)", "use_in_my_work"),
+            ("🔎 참고 활용 (Reference value)", "reference_value"),
             ("🎓 체어 총평 (Chair's verdict)", "verdict"),
         ]
         for heading, key in sections:

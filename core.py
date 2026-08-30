@@ -217,6 +217,7 @@ SUMMARY_SCHEMA = {
         "contribution": {"type": "string"},
         "critical_appraisal": {"type": "string"},
         "use_in_my_work": {"type": "string"},
+        "reference_value": {"type": "string"},
         "verdict": {"type": "string"},
         "relevance_rating": {"type": "string", "enum": ["High", "Medium", "Low"]},
         "engagement": {"type": "string", "enum": ["Deep read", "Cite", "Skim"]},
@@ -225,7 +226,7 @@ SUMMARY_SCHEMA = {
     "required": [
         "title", "authors", "year", "venue", "tldr",
         "problem", "method", "key_findings",
-        "contribution", "critical_appraisal", "use_in_my_work", "verdict",
+        "contribution", "critical_appraisal", "use_in_my_work", "reference_value", "verdict",
         "relevance_rating", "engagement", "keywords",
     ],
     "additionalProperties": False,
@@ -276,7 +277,8 @@ Fields:
 - key_findings: the main results / claims, with specifics (numbers, cases).
 - contribution: is the contribution genuinely NOVEL and significant, or incremental / derivative / a repackaging of existing work? Be blunt.
 - critical_appraisal: your SHARP critique — the real methodological, theoretical, and evidentiary weaknesses; blind spots; unexamined assumptions; where the claims outrun the evidence. Point to what in the paper. This is the heart of the review.
-- use_in_my_work: what the student should actually DO with it — build on it / argue against it / borrow only the method / cite-and-move-past — tied to their specific research questions. Also name the GAP it leaves open that the student's own work could fill.
+- use_in_my_work: what the student should actually DO with THIS paper — build on it / argue against it / borrow only the method / cite-and-move-past — tied to their specific research questions. Also name the GAP it leaves open that the student's own work could fill.
+- reference_value: the student is time-constrained and cannot read everything. SEPARATELY from direct relevance, judge this paper's worth as a RESOURCE TO MINE even if they skip the paper itself — specific cited works, authors, theories, datasets, instruments, or a literature/debate it maps that are worth chasing for the student's research. When you can see the reference list, name concrete items. A paper can be LOW direct relevance yet HIGH reference value ("skip the argument, but its citations to X and Y are directly on your topic"). If there is little to mine, say so plainly. (From an abstract alone you cannot see the bibliography — say so and point only to what the abstract implies.)
 - verdict: your candid overall judgment as chair, in one sharp paragraph — how rigorous is it, how much does it actually deliver, and is it worth the student's time.
 - relevance_rating: relevance to the student's research program — exactly one of "High", "Medium", "Low".
 - engagement: what the student should do with it — exactly one of "Deep read" (worth close study), "Cite" (cite and move on), "Skim" (low priority).
@@ -461,6 +463,7 @@ def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
     children += _text_blocks("기여도 (Contribution)", summary.get("contribution", ""))
     children += _text_blocks("⚠️ 비판적 검토 (Critical appraisal)", summary.get("critical_appraisal", ""))
     children += _text_blocks("내 연구에서의 활용 (Use in my work)", summary.get("use_in_my_work", ""))
+    children += _text_blocks("🔎 참고 활용 (Reference value / 인용·자료)", summary.get("reference_value", ""))
     children += _text_blocks("🎓 체어 총평 (Chair's verdict)", summary.get("verdict", ""))
 
     # ── 원문 섹션 (원문 링크 + PDF 첨부) ──
