@@ -49,6 +49,7 @@ def load_config() -> dict:
         "notion_token": os.environ.get("NOTION_TOKEN", "").strip(),
         "notion_parent": os.environ.get("NOTION_PARENT_PAGE_ID", "").strip(),
         "notion_db": os.environ.get("NOTION_DATABASE_ID", "").strip(),
+        "notion_books": os.environ.get("NOTION_BOOKS_DB_ID", "").strip(),
     }
 
 
@@ -452,6 +453,27 @@ def ensure_database(notion: NotionClient, parent_page_id: str) -> str:
     return ds_id
 
 
+# 📖 자료 노트(책) 전용 DB — 심사 없이, 검색·키워드 중심의 근거 자료 저장고
+BOOKS_DB_PROPERTIES = {
+    "Title": {"title": {}},
+    "Authors": {"rich_text": {}},
+    "Tags": {"multi_select": {}},
+    "TLDR": {"rich_text": {}},
+    "Source": {"url": {}},
+}
+
+
+def ensure_books_database(notion: NotionClient, parent_page_id: str) -> str:
+    """책/자료 노트 전용 DB를 만들고 데이터소스 ID를 돌려줍니다."""
+    parent_page_id = extract_notion_id(parent_page_id)
+    db = notion.databases.create(
+        parent={"type": "page_id", "page_id": parent_page_id},
+        title=[{"type": "text", "text": {"content": "📖 자료 노트 (Reading Notes)"}}],
+        initial_data_source={"properties": BOOKS_DB_PROPERTIES},
+    )
+    return db["data_sources"][0]["id"]
+
+
 def _text_blocks(heading: str, body: str) -> list:
     """제목 + 본문 문단을 Notion 블록으로 만듭니다. (2000자 제한을 고려해 나눔)"""
     blocks = [{
@@ -545,15 +567,20 @@ def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
     if my_notes:
         children += _text_blocks("📝 내 노트 (My notes)", my_notes)
     if summary.get("tldr"):
-        children += _text_blocks("TL;DR", summary["tldr"])
-    children += _text_blocks("문제 (Problem)", summary.get("problem", ""))
-    children += _text_blocks("방법 (Method)", summary.get("method", ""))
-    children += _text_blocks("핵심 결과 (Key findings)", summary.get("key_findings", ""))
-    children += _text_blocks("기여도 (Contribution)", summary.get("contribution", ""))
-    children += _text_blocks("⚠️ 비판적 검토 (Critical appraisal)", summary.get("critical_appraisal", ""))
-    children += _text_blocks("내 연구에서의 활용 (Use in my work)", summary.get("use_in_my_work", ""))
-    children += _text_blocks("🔎 참고 활용 (Reference value / 인용·자료)", summary.get("reference_value", ""))
-    children += _text_blocks("🎓 체어 총평 (Chair's verdict)", summary.get("verdict", ""))
+        children += _text_blocks("한 줄 요약 (TL;DR)", summary["tldr"])
+    # 내용이 있는 항목만 섹션으로 만듭니다 (책 노트는 체어 섹션이 비어 있어 자동으로 생략됨).
+    for heading, key in [
+        ("문제 (Problem)", "problem"),
+        ("방법 (Method)", "method"),
+        ("핵심 결과 (Key findings)", "key_findings"),
+        ("기여도 (Contribution)", "contribution"),
+        ("⚠️ 비판적 검토 (Critical appraisal)", "critical_appraisal"),
+        ("내 연구에서의 활용 (Use in my work)", "use_in_my_work"),
+        ("🔎 참고 활용 (Reference value / 인용·자료)", "reference_value"),
+        ("🎓 체어 총평 (Chair's verdict)", "verdict"),
+    ]:
+        if (summary.get(key) or "").strip():
+            children += _text_blocks(heading, summary[key])
 
     # ── 인용 섹션 (Kindle 구절 등) ──
     if quotes:
@@ -587,22 +614,19 @@ def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
     return page  # {"id":..., "url":...} — 호출부에서 url/id를 씁니다
 
 
-def list_books(notion: NotionClient, data_source_id: str) -> list[dict]:
-    """저장된 '책'(Type=Book) 목록을 [{id, title, authors, url}] 로 가져옵니다."""
+def list_books(notion: NotionClient, books_data_source_id: str) -> list[dict]:
+    """책/자료 노트 DB의 항목 목록을 [{id, title, authors, url}] 로 가져옵니다."""
     books: list[dict] = []
     cursor = None
     for _ in range(20):
         kwargs = {"page_size": 100}
         if cursor:
             kwargs["start_cursor"] = cursor
-        resp = notion.data_sources.query(data_source_id, **kwargs)
+        resp = notion.data_sources.query(books_data_source_id, **kwargs)
         for page in resp.get("results", []):
             if page.get("archived") or page.get("in_trash"):
                 continue
             props = page.get("properties", {})
-            t = ((props.get("Type") or {}).get("select") or {}).get("name")
-            if t != "Book":
-                continue
             books.append({
                 "id": page["id"],
                 "title": _plain_text(props.get("Title")),
@@ -614,6 +638,85 @@ def list_books(notion: NotionClient, data_source_id: str) -> list[dict]:
         else:
             break
     return books
+
+
+_INDEX_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tldr": {"type": "string"},
+        "keywords": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["tldr", "keywords"],
+    "additionalProperties": False,
+}
+
+
+def index_notes(client: anthropic.Anthropic, title: str, author: str, text: str,
+                language: str = "ko") -> dict:
+    """책 노트/구절을 '심사 없이' 검색용으로 색인합니다 — 중립 한줄요약 + 키워드."""
+    lang_name = "Korean" if language == "ko" else "English"
+    profile = load_research_profile()
+    prof_block = (f"\nStudent's research (to pick research-relevant keywords):\n<profile>\n{profile}\n</profile>\n"
+                  if profile else "")
+    prompt = f"""You are an INDEXER (not a reviewer or critic) building a searchable evidence database for a PhD student. Do NOT evaluate, praise, or critique. Just index the material for later retrieval.
+
+Book: {title} — {author or "(unknown)"}
+The student's own notes/quotes:
+<material>
+{text}
+</material>
+{prof_block}
+Return:
+- "tldr": ONE neutral sentence describing what this material is about (topic/content only, no judgment), in {lang_name}.
+- "keywords": 4-10 short topical tags for search — concepts, themes, named authors/theories, and terms tied to the student's research. No commas inside a tag."""
+    resp = client.messages.create(
+        model=MODEL,
+        max_tokens=2000,
+        output_config={"format": {"type": "json_schema", "schema": _INDEX_SCHEMA}},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    out = next((b.text for b in resp.content if b.type == "text"), "{}")
+    d = json.loads(out)
+    return {"tldr": d.get("tldr", ""), "keywords": d.get("keywords", [])}
+
+
+def save_book(notion: NotionClient, books_data_source_id: str, title: str, author: str,
+              tldr: str, keywords: list, my_notes: str = "", quotes: list | None = None,
+              source_url: str = "") -> dict:
+    """책/자료 노트를 자료 DB에 저장합니다 (심사 없이, 검색·키워드 중심)."""
+    props = {
+        "Title": {"title": [{"type": "text", "text": {"content": (title or "제목 없음")[:2000]}}]},
+        "Authors": {"rich_text": [{"type": "text", "text": {"content": (author or "")[:2000]}}]},
+        "TLDR": {"rich_text": [{"type": "text", "text": {"content": (tldr or "")[:2000]}}]},
+        "Tags": {"multi_select": [{"name": _clean_tag(k)} for k in (keywords or []) if _clean_tag(k)]},
+    }
+    if source_url:
+        props["Source"] = {"url": source_url}
+    children: list = []
+    if (my_notes or "").strip():
+        children += _text_blocks("📝 내 노트 (My notes)", my_notes)
+    if quotes:
+        children.append({"object": "block", "type": "heading_2", "heading_2": {
+            "rich_text": [{"type": "text", "text": {"content": "📌 인용 (Quotes)"}}]}})
+        children += _quote_blocks(quotes)
+    return notion.pages.create(
+        parent={"type": "data_source_id", "data_source_id": books_data_source_id},
+        properties=props, children=children,
+    )
+
+
+def add_keywords_to_page(notion: NotionClient, page_id: str, keywords: list) -> None:
+    """기존 페이지의 Tags에 새 키워드를 합칩니다 (중복 제거)."""
+    if not keywords:
+        return
+    page = notion.pages.retrieve(page_id)
+    cur = (page["properties"].get("Tags") or {}).get("multi_select") or []
+    names = {o.get("name") for o in cur if o.get("name")}
+    for k in keywords:
+        ck = _clean_tag(k)
+        if ck:
+            names.add(ck)
+    notion.pages.update(page_id, properties={"Tags": {"multi_select": [{"name": n} for n in sorted(names)]}})
 
 
 _QUOTES_SCHEMA = {

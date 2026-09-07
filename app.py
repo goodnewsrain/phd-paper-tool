@@ -23,8 +23,8 @@ st.set_page_config(page_title="논문 요약 → Notion", page_icon="📚", layo
 # (로컬에선 secrets 파일이 없으므로 그냥 넘어가고 .env 를 씁니다.)
 try:
     for _k in ["ANTHROPIC_API_KEY", "ANTHROPIC_WORKSPACE_ID", "NOTION_TOKEN",
-               "NOTION_PARENT_PAGE_ID", "NOTION_DATABASE_ID", "APP_PASSWORD",
-               "RESEARCH_PROFILE"]:
+               "NOTION_PARENT_PAGE_ID", "NOTION_DATABASE_ID", "NOTION_BOOKS_DB_ID",
+               "APP_PASSWORD", "RESEARCH_PROFILE"]:
         if _k in st.secrets and st.secrets[_k]:
             os.environ[_k] = str(st.secrets[_k])
 except Exception:
@@ -93,6 +93,23 @@ def get_or_create_db() -> str:
     return db_id
 
 
+def get_or_create_books_db() -> str:
+    if cfg["notion_books"]:
+        return core.extract_notion_id(cfg["notion_books"])
+    notion = core.make_notion_client(cfg["notion_token"])
+    with st.spinner("Notion에 자료 노트 데이터베이스를 만드는 중…"):
+        bid = core.ensure_books_database(notion, cfg["notion_parent"])
+    try:
+        env_path = find_dotenv() or ".env"
+        with open(env_path, "a", encoding="utf-8") as f:
+            f.write(f"\nNOTION_BOOKS_DB_ID={bid}\n")
+    except Exception:
+        pass
+    st.info("📖 자료 노트 데이터베이스를 만들었어요. (Streamlit 비밀값에 NOTION_BOOKS_DB_ID를 추가하면 재사용됩니다)")
+    st.code(f"NOTION_BOOKS_DB_ID={bid}", language="bash")
+    return bid
+
+
 try:
     db_id = get_or_create_db()
 except Exception as e:
@@ -112,13 +129,15 @@ identifier = ""
 uploaded = None
 book_title = book_author = book_notes = book_quotes = ""
 existing_book_id = None
+books_db_id = ""
 if mode == "📄 논문":
     identifier = st.text_input("arXiv ID · arXiv 링크 · DOI", placeholder="예: 2401.12345  또는  10.1145/3593013.3594001")
     uploaded = st.file_uploader("또는 PDF 파일 업로드", type=["pdf"])
     go = st.button("요약하기", type="primary", use_container_width=True)
 else:
+    books_db_id = get_or_create_books_db()
     try:
-        _books = core.list_books(core.make_notion_client(cfg["notion_token"]), db_id)
+        _books = core.list_books(core.make_notion_client(cfg["notion_token"]), books_db_id)
     except Exception:
         _books = []
     _opts = ["+ 새 책 추가"] + [b["title"] for b in _books]
@@ -165,27 +184,42 @@ if go:
             if book_quotes.strip():
                 with st.spinner("Kindle 구절을 인용 형식으로 정리하는 중…"):
                     quotes = core.format_quotes(client, book_quotes, book_title, book_author, lang_code)
+            # 검색용 키워드·한줄요약 색인 (심사 아님)
+            index_text = (book_notes + "\n" + " ".join(q.get("quote", "") for q in quotes)).strip()
+            idx = {"tldr": "", "keywords": []}
+            if index_text:
+                with st.spinner("검색용 키워드 색인 중…"):
+                    idx = core.index_notes(client, book_title, book_author, index_text, lang_code)
+
             if existing_book_id:
                 if not has_content:
                     st.error("추가할 노트나 구절을 입력해 주세요.")
                 else:
-                    with st.spinner("기존 책에 이어서 저장하는 중…"):
+                    with st.spinner("기존 자료에 이어서 저장하는 중…"):
                         core.append_to_book(notion, existing_book_id, book_notes, quotes)
-                    st.success(f"기존 책 «{book_title}»에 추가했어요.")
+                        core.add_keywords_to_page(notion, existing_book_id, idx["keywords"])
+                    st.success(f"기존 자료 «{book_title}»에 추가했어요.")
                     _bp = notion.pages.retrieve(existing_book_id)
                     if _bp.get("url"):
                         st.markdown(f"👉 [Notion에서 열기]({_bp['url']})")
+                    if idx["keywords"]:
+                        st.write("🏷️ " + " ".join(f"`{k}`" for k in idx["keywords"]))
             else:
                 if not (book_title.strip() and has_content):
                     st.error("책 제목과, 노트 또는 구절을 입력해 주세요.")
                 else:
-                    with st.spinner("Claude가 체어 관점으로 정리하는 중…"):
-                        summary = core.summarize_book(client, book_title, book_author,
-                                                      book_notes or "(노트 없음 — 구절만 저장)", language=lang_code)
-                    with st.spinner("Notion에 저장하는 중…"):
-                        page = core.save_to_notion(notion, db_id, summary, "",
-                                                   item_type="Book", my_notes=book_notes, quotes=quotes)
+                    with st.spinner("자료 노트로 저장하는 중…"):
+                        page = core.save_book(notion, books_db_id, book_title, book_author,
+                                              idx["tldr"], idx["keywords"],
+                                              my_notes=book_notes, quotes=quotes)
                         page_url = page.get("url", "")
+                    st.success("자료 노트로 저장했어요. (심사 없이 저장 · 키워드로 검색 가능)")
+                    if page_url:
+                        st.markdown(f"👉 [Notion에서 열기]({page_url})")
+                    if idx["keywords"]:
+                        st.write("🏷️ " + " ".join(f"`{k}`" for k in idx["keywords"]))
+                    if idx["tldr"]:
+                        st.info(idx["tldr"])
         else:
             with st.spinner("논문을 가져오는 중…"):
                 resolved = core.resolve_input(identifier, uploaded.getvalue() if uploaded else None)
