@@ -486,12 +486,30 @@ def upload_pdf(notion: NotionClient, pdf_bytes: bytes, title: str = "paper") -> 
     return fu["id"]
 
 
+def _quote_blocks(quotes: list[dict]) -> list:
+    """인용 목록을 Notion 인용(blockquote) + 출처 블록으로 만듭니다."""
+    blocks: list = []
+    for q in quotes or []:
+        text = (q.get("quote") or "").strip()
+        if not text:
+            continue
+        for i in range(0, len(text), 1900):
+            blocks.append({"object": "block", "type": "quote",
+                           "quote": {"rich_text": [{"type": "text", "text": {"content": text[i:i + 1900]}}]}})
+        cite = (q.get("citation") or "").strip()
+        if cite:
+            blocks.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": [
+                {"type": "text", "text": {"content": cite[:1900]}, "annotations": {"italic": True}}]}})
+    return blocks
+
+
 def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
                    source_url: str = "", pdf_bytes: bytes | None = None,
-                   item_type: str = "Paper", my_notes: str = "") -> dict:
+                   item_type: str = "Paper", my_notes: str = "", quotes: list | None = None) -> dict:
     """요약/정리를 데이터소스에 새 페이지로 저장하고, 그 페이지 객체를 돌려줍니다.
 
     item_type: "Paper" 또는 "Book". my_notes 가 있으면 '내 노트' 섹션을 맨 위에 넣습니다.
+    quotes 가 있으면 '인용' 섹션을 넣습니다.
     source_url 이 있으면 원문 링크(북마크)를, pdf_bytes 가 있으면 원문 PDF를 페이지에 첨부합니다.
     """
     # 연도는 숫자로 변환 시도
@@ -537,6 +555,12 @@ def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
     children += _text_blocks("🔎 참고 활용 (Reference value / 인용·자료)", summary.get("reference_value", ""))
     children += _text_blocks("🎓 체어 총평 (Chair's verdict)", summary.get("verdict", ""))
 
+    # ── 인용 섹션 (Kindle 구절 등) ──
+    if quotes:
+        children.append({"object": "block", "type": "heading_2", "heading_2": {
+            "rich_text": [{"type": "text", "text": {"content": "📌 인용 (Quotes)"}}]}})
+        children += _quote_blocks(quotes)
+
     # ── 원문 섹션 (원문 링크 + PDF 첨부) ──
     original_blocks: list = []
     if source_url:
@@ -561,6 +585,93 @@ def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
         children=children,
     )
     return page  # {"id":..., "url":...} — 호출부에서 url/id를 씁니다
+
+
+def list_books(notion: NotionClient, data_source_id: str) -> list[dict]:
+    """저장된 '책'(Type=Book) 목록을 [{id, title, authors, url}] 로 가져옵니다."""
+    books: list[dict] = []
+    cursor = None
+    for _ in range(20):
+        kwargs = {"page_size": 100}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        resp = notion.data_sources.query(data_source_id, **kwargs)
+        for page in resp.get("results", []):
+            if page.get("archived") or page.get("in_trash"):
+                continue
+            props = page.get("properties", {})
+            t = ((props.get("Type") or {}).get("select") or {}).get("name")
+            if t != "Book":
+                continue
+            books.append({
+                "id": page["id"],
+                "title": _plain_text(props.get("Title")),
+                "authors": _plain_text(props.get("Authors")),
+                "url": page.get("url", ""),
+            })
+        if resp.get("has_more"):
+            cursor = resp.get("next_cursor")
+        else:
+            break
+    return books
+
+
+_QUOTES_SCHEMA = {
+    "type": "object",
+    "properties": {"quotes": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"quote": {"type": "string"}, "citation": {"type": "string"}},
+        "required": ["quote", "citation"],
+        "additionalProperties": False,
+    }}},
+    "required": ["quotes"],
+    "additionalProperties": False,
+}
+
+
+def format_quotes(client: anthropic.Anthropic, raw_text: str, title: str, author: str,
+                  language: str = "ko") -> list[dict]:
+    """Kindle 등에서 복사한 구절 텍스트를, 정제된 인용문 + 출처 목록으로 만듭니다."""
+    if not (raw_text or "").strip():
+        return []
+    lang_name = "Korean" if language == "ko" else "English"
+    prompt = f"""The student pasted highlights / quotes copied from Kindle (or similar) for this book:
+Title: {title}
+Author: {author or "(unknown)"}
+
+Raw pasted text:
+<pasted>
+{raw_text}
+</pasted>
+
+Split this into individual quotes. For EACH quote return:
+- "quote": the verbatim passage, exactly as written. Strip Kindle boilerplate (e.g. "Excerpt From", copyright notices, app chrome), but do NOT alter the passage wording.
+- "citation": a clean scholarly citation for that passage — author, title, and the page number or Kindle location if it appears in the pasted text (e.g. "Jung Young Lee, Marginality, loc. 1234" or "..., p. 57"). If no location/page is present, cite author and title only. Write any citation labels in {lang_name}; keep author/title in their original language.
+
+If the pasted text is a single quote, return a one-item list. Return an empty list only if there is no quotable passage."""
+    resp = client.messages.create(
+        model=MODEL,
+        max_tokens=8000,
+        output_config={"format": {"type": "json_schema", "schema": _QUOTES_SCHEMA}},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = next((b.text for b in resp.content if b.type == "text"), "{}")
+    return json.loads(text).get("quotes", [])
+
+
+def append_to_book(notion: NotionClient, page_id: str, notes: str = "", quotes: list | None = None) -> None:
+    """기존 책 페이지에 새 노트/인용을 이어서 붙입니다."""
+    import datetime
+    today = datetime.date.today().isoformat()
+    blocks: list = [{"object": "block", "type": "divider", "divider": {}}]
+    if (notes or "").strip():
+        blocks += _text_blocks(f"📝 노트 추가 ({today})", notes)
+    if quotes:
+        blocks.append({"object": "block", "type": "heading_3", "heading_3": {
+            "rich_text": [{"type": "text", "text": {"content": f"📌 인용 추가 ({today})"}}]}})
+        blocks += _quote_blocks(quotes)
+    if len(blocks) > 1:  # divider 말고 실제 내용이 있을 때만
+        notion.blocks.children.append(page_id, children=blocks)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

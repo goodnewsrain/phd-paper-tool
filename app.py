@@ -110,17 +110,31 @@ lang_code = "ko" if language == "한국어" else "en"
 
 identifier = ""
 uploaded = None
-book_title = book_author = book_notes = ""
+book_title = book_author = book_notes = book_quotes = ""
+existing_book_id = None
 if mode == "📄 논문":
     identifier = st.text_input("arXiv ID · arXiv 링크 · DOI", placeholder="예: 2401.12345  또는  10.1145/3593013.3594001")
     uploaded = st.file_uploader("또는 PDF 파일 업로드", type=["pdf"])
     go = st.button("요약하기", type="primary", use_container_width=True)
 else:
-    book_title = st.text_input("책 제목", placeholder="예: Marginality: The Key to Multicultural Theology")
-    book_author = st.text_input("저자 (선택)", placeholder="예: Jung Young Lee")
-    book_notes = st.text_area("내 노트 / 메모", height=220,
-                              placeholder="이 책을 읽으며 정리한 노트를 붙여넣으세요. 길고 구체적일수록 정리가 정확해져요.")
-    go = st.button("책 정리하기", type="primary", use_container_width=True)
+    try:
+        _books = core.list_books(core.make_notion_client(cfg["notion_token"]), db_id)
+    except Exception:
+        _books = []
+    _opts = ["+ 새 책 추가"] + [b["title"] for b in _books]
+    _choice = st.selectbox("책 선택", _opts, help="이미 등록한 책은 골라서 노트·구절만 이어서 추가할 수 있어요.")
+    if _choice == "+ 새 책 추가":
+        book_title = st.text_input("책 제목", placeholder="예: Marginality: The Key to Multicultural Theology")
+        book_author = st.text_input("저자 (선택)", placeholder="예: Jung Young Lee")
+    else:
+        _b = _books[_opts.index(_choice) - 1]
+        book_title, book_author, existing_book_id = _b["title"], _b["authors"], _b["id"]
+        st.caption(f"📖 기존 책에 이어서 추가: **{book_title}**" + (f" — {book_author}" if book_author else ""))
+    book_notes = st.text_area("내 노트 / 메모 (선택)", height=160,
+                              placeholder="이 책을 읽으며 정리한 노트를 붙여넣으세요.")
+    book_quotes = st.text_area("📌 Kindle 구절 / 인용 (선택)", height=140,
+                               placeholder="킨들에서 복사한 하이라이트를 붙여넣으세요. 자동으로 인용 형식을 만들어요.")
+    go = st.button("저장하기", type="primary", use_container_width=True)
 
 with st.expander("🔗 라이브러리 정리 — 관련 논문 다시 연결"):
     st.caption("저장된 모든 논문을 다시 스캔해 관련 논문끼리 연결해요. 논문 수만큼 시간·비용이 들어요.")
@@ -146,15 +160,32 @@ if go:
         client = core.make_anthropic_client(cfg)
 
         if mode == "📖 책 (내 노트)":
-            if not (book_title.strip() and book_notes.strip()):
-                st.error("책 제목과 내 노트를 모두 입력해 주세요.")
+            has_content = bool(book_notes.strip() or book_quotes.strip())
+            quotes = []
+            if book_quotes.strip():
+                with st.spinner("Kindle 구절을 인용 형식으로 정리하는 중…"):
+                    quotes = core.format_quotes(client, book_quotes, book_title, book_author, lang_code)
+            if existing_book_id:
+                if not has_content:
+                    st.error("추가할 노트나 구절을 입력해 주세요.")
+                else:
+                    with st.spinner("기존 책에 이어서 저장하는 중…"):
+                        core.append_to_book(notion, existing_book_id, book_notes, quotes)
+                    st.success(f"기존 책 «{book_title}»에 추가했어요.")
+                    _bp = notion.pages.retrieve(existing_book_id)
+                    if _bp.get("url"):
+                        st.markdown(f"👉 [Notion에서 열기]({_bp['url']})")
             else:
-                with st.spinner("Claude가 체어 관점으로 노트를 정리하는 중…"):
-                    summary = core.summarize_book(client, book_title, book_author, book_notes, language=lang_code)
-                with st.spinner("Notion에 저장하는 중…"):
-                    page = core.save_to_notion(notion, db_id, summary, "",
-                                               item_type="Book", my_notes=book_notes)
-                    page_url = page.get("url", "")
+                if not (book_title.strip() and has_content):
+                    st.error("책 제목과, 노트 또는 구절을 입력해 주세요.")
+                else:
+                    with st.spinner("Claude가 체어 관점으로 정리하는 중…"):
+                        summary = core.summarize_book(client, book_title, book_author,
+                                                      book_notes or "(노트 없음 — 구절만 저장)", language=lang_code)
+                    with st.spinner("Notion에 저장하는 중…"):
+                        page = core.save_to_notion(notion, db_id, summary, "",
+                                                   item_type="Book", my_notes=book_notes, quotes=quotes)
+                        page_url = page.get("url", "")
         else:
             with st.spinner("논문을 가져오는 중…"):
                 resolved = core.resolve_input(identifier, uploaded.getvalue() if uploaded else None)
