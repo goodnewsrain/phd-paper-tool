@@ -321,6 +321,68 @@ def summarize(client: anthropic.Anthropic, resolved: dict, language: str = "ko")
     return json.loads(text)
 
 
+def _build_book_prompt(language: str, title: str, author: str, notes: str, research_profile: str) -> str:
+    lang_name = "Korean" if language == "ko" else "English"
+    profile_block = (
+        f"\nThe student's research program — evaluate in service of THIS:\n"
+        f"<research_profile>\n{research_profile}\n</research_profile>\n"
+        if research_profile else ""
+    )
+    return f"""You are a demanding doctoral committee CHAIR in a Leadership, Equity, and Inquiry (LEI) PhD program. Your student has READ this book and written the notes below. You are working ONLY from the student's notes — not the full book text.
+
+Book: {title} — {author or "(author unknown)"}
+
+Student's notes:
+<notes>
+{notes}
+</notes>
+{profile_block}
+Task: synthesize and critically assess this book AS REPRESENTED BY THE STUDENT'S NOTES, in service of their research program. Keep the sharp-examiner stance — no reflexive praise.
+- Distinguish the book's argument from the student's own reactions where the notes allow.
+- If the notes are too thin to judge the book fairly, SAY SO and flag what the student likely missed or should return to.
+- Write evaluative fields in {lang_name}; keep title/author in their original language.
+
+Fields (interpret for a BOOK):
+- tldr: what the book argues, in one or two sentences.
+- problem: the book's central thesis / problem.
+- method: the book's approach / mode of argument / evidence base.
+- key_findings: its main claims / takeaways (from the notes).
+- contribution: is its contribution genuinely significant, or familiar? Be blunt.
+- critical_appraisal: sharp critique — weaknesses, blind spots, overclaims evident from the notes; note where the notes themselves are thin.
+- use_in_my_work: what the student should DO with it for their research — and the gap it leaves open.
+- reference_value: what to chase from this book (authors, works, frameworks it engages) for the student's research, beyond the book itself.
+- verdict: candid overall judgment as chair, one sharp paragraph.
+- relevance_rating: relevance to the research program — "High" / "Medium" / "Low".
+- engagement: "Deep read" (revisit closely) / "Cite" / "Skim".
+- keywords: 3-6 short tags.
+- If a field is genuinely unknown from the notes, use an empty string "".
+"""
+
+
+def summarize_book(client: anthropic.Anthropic, title: str, author: str, notes: str,
+                   language: str = "ko") -> dict:
+    """읽은 책 + 내 노트를 받아, 체어 관점의 구조화 정리(dict)를 돌려줍니다."""
+    prompt = _build_book_prompt(language, title, author, notes, load_research_profile())
+    resp = client.messages.create(
+        model=MODEL,
+        max_tokens=MAX_TOKENS,
+        thinking={"type": "adaptive"},
+        output_config={"format": {"type": "json_schema", "schema": SUMMARY_SCHEMA}},
+        messages=[{"role": "user", "content": prompt}],
+    )
+    if resp.stop_reason == "refusal":
+        raise RuntimeError("모델이 이 요청을 거절했습니다.")
+    text = next((b.text for b in resp.content if b.type == "text"), "")
+    if not text:
+        raise RuntimeError("정리 결과가 비어 있습니다. 다시 시도해 주세요.")
+    d = json.loads(text)
+    if title:
+        d["title"] = title       # 사용자가 입력한 제목/저자 우선
+    if author:
+        d["authors"] = author
+    return d
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Notion 저장
 # ─────────────────────────────────────────────────────────────────────────────
@@ -333,6 +395,10 @@ def make_notion_client(token: str) -> NotionClient:
 # 문헌 DB의 속성(칼럼) 정의 — 새 DB 생성과 기존 DB 보정에 함께 씁니다.
 DB_PROPERTIES = {
     "Title": {"title": {}},
+    "Type": {"select": {"options": [
+        {"name": "Paper", "color": "blue"},
+        {"name": "Book", "color": "green"},
+    ]}},
     "Authors": {"rich_text": {}},
     "Year": {"number": {}},
     "Venue": {"rich_text": {}},
@@ -421,9 +487,11 @@ def upload_pdf(notion: NotionClient, pdf_bytes: bytes, title: str = "paper") -> 
 
 
 def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
-                   source_url: str, pdf_bytes: bytes | None = None) -> dict:
-    """요약을 문헌 데이터소스에 새 페이지로 저장하고, 그 페이지 객체를 돌려줍니다.
+                   source_url: str = "", pdf_bytes: bytes | None = None,
+                   item_type: str = "Paper", my_notes: str = "") -> dict:
+    """요약/정리를 데이터소스에 새 페이지로 저장하고, 그 페이지 객체를 돌려줍니다.
 
+    item_type: "Paper" 또는 "Book". my_notes 가 있으면 '내 노트' 섹션을 맨 위에 넣습니다.
     source_url 이 있으면 원문 링크(북마크)를, pdf_bytes 가 있으면 원문 PDF를 페이지에 첨부합니다.
     """
     # 연도는 숫자로 변환 시도
@@ -442,6 +510,7 @@ def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
         "TLDR": {"rich_text": [{"type": "text", "text": {"content": (summary.get("tldr") or "")[:2000]}}]},
         "Tags": {"multi_select": tags},
         "Status": {"select": {"name": "To read"}},
+        "Type": {"select": {"name": item_type}},
     }
     if year_val:
         properties["Year"] = {"number": year_val}
@@ -455,6 +524,8 @@ def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
         properties["Engagement"] = {"select": {"name": eng}}
 
     children: list = []
+    if my_notes:
+        children += _text_blocks("📝 내 노트 (My notes)", my_notes)
     if summary.get("tldr"):
         children += _text_blocks("TL;DR", summary["tldr"])
     children += _text_blocks("문제 (Problem)", summary.get("problem", ""))

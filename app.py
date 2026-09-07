@@ -104,12 +104,23 @@ except Exception as e:
 
 # ── 입력 ────────────────────────────────────────────────────────────────────
 st.divider()
-identifier = st.text_input("arXiv ID · arXiv 링크 · DOI", placeholder="예: 2401.12345  또는  10.1145/3593013.3594001")
-uploaded = st.file_uploader("또는 PDF 파일 업로드", type=["pdf"])
-language = st.radio("요약 언어", ["한국어", "English"], horizontal=True)
+mode = st.radio("무엇을 추가할까요?", ["📄 논문", "📖 책 (내 노트)"], horizontal=True)
+language = st.radio("정리 언어", ["한국어", "English"], horizontal=True)
 lang_code = "ko" if language == "한국어" else "en"
 
-go = st.button("요약하기", type="primary", use_container_width=True)
+identifier = ""
+uploaded = None
+book_title = book_author = book_notes = ""
+if mode == "📄 논문":
+    identifier = st.text_input("arXiv ID · arXiv 링크 · DOI", placeholder="예: 2401.12345  또는  10.1145/3593013.3594001")
+    uploaded = st.file_uploader("또는 PDF 파일 업로드", type=["pdf"])
+    go = st.button("요약하기", type="primary", use_container_width=True)
+else:
+    book_title = st.text_input("책 제목", placeholder="예: Marginality: The Key to Multicultural Theology")
+    book_author = st.text_input("저자 (선택)", placeholder="예: Jung Young Lee")
+    book_notes = st.text_area("내 노트 / 메모", height=220,
+                              placeholder="이 책을 읽으며 정리한 노트를 붙여넣으세요. 길고 구체적일수록 정리가 정확해져요.")
+    go = st.button("책 정리하기", type="primary", use_container_width=True)
 
 with st.expander("🔗 라이브러리 정리 — 관련 논문 다시 연결"):
     st.caption("저장된 모든 논문을 다시 스캔해 관련 논문끼리 연결해요. 논문 수만큼 시간·비용이 들어요.")
@@ -129,36 +140,50 @@ with st.expander("🔗 라이브러리 정리 — 관련 논문 다시 연결"):
 # ── 실행 ────────────────────────────────────────────────────────────────────
 if go:
     try:
-        with st.spinner("논문을 가져오는 중…"):
-            resolved = core.resolve_input(identifier, uploaded.getvalue() if uploaded else None)
-
-        if resolved.get("note"):
-            st.info(resolved["note"])
-
+        summary = None
+        page_url = ""
+        notion = core.make_notion_client(cfg["notion_token"])
         client = core.make_anthropic_client(cfg)
-        with st.spinner("Claude가 논문을 읽고 요약하는 중… (길면 1~2분 걸릴 수 있어요)"):
-            summary = core.summarize(client, resolved, language=lang_code)
 
-        with st.spinner("Notion에 저장하는 중…"):
-            notion = core.make_notion_client(cfg["notion_token"])
-            page = core.save_to_notion(notion, db_id, summary, resolved.get("source_url", ""),
-                                       pdf_bytes=resolved.get("pdf_bytes"))
-            page_url = page.get("url", "")
+        if mode == "📖 책 (내 노트)":
+            if not (book_title.strip() and book_notes.strip()):
+                st.error("책 제목과 내 노트를 모두 입력해 주세요.")
+            else:
+                with st.spinner("Claude가 체어 관점으로 노트를 정리하는 중…"):
+                    summary = core.summarize_book(client, book_title, book_author, book_notes, language=lang_code)
+                with st.spinner("Notion에 저장하는 중…"):
+                    page = core.save_to_notion(notion, db_id, summary, "",
+                                               item_type="Book", my_notes=book_notes)
+                    page_url = page.get("url", "")
+        else:
+            with st.spinner("논문을 가져오는 중…"):
+                resolved = core.resolve_input(identifier, uploaded.getvalue() if uploaded else None)
+            if resolved.get("note"):
+                st.info(resolved["note"])
+            with st.spinner("Claude가 논문을 읽고 요약하는 중… (길면 1~2분 걸릴 수 있어요)"):
+                summary = core.summarize(client, resolved, language=lang_code)
+            with st.spinner("Notion에 저장하는 중…"):
+                page = core.save_to_notion(notion, db_id, summary, resolved.get("source_url", ""),
+                                           pdf_bytes=resolved.get("pdf_bytes"), item_type="Paper")
+                page_url = page.get("url", "")
 
-        # 비슷한 논문 자동 연동
+        if summary is None:
+            st.stop()
+
+        # 비슷한 자료 자동 연동
         try:
-            with st.spinner("비슷한 논문 찾아 연결하는 중…"):
+            with st.spinner("비슷한 자료 찾아 연결하는 중…"):
                 n_linked = core.link_new_paper(notion, client, db_id, summary, page["id"])
             if n_linked:
-                st.caption(f"🔗 관련 논문 {n_linked}편과 자동으로 연결했어요")
+                st.caption(f"🔗 관련 자료 {n_linked}건과 자동으로 연결했어요")
         except Exception as e:
-            st.caption(f"(관련 논문 연결은 건너뜀: {e})")
+            st.caption(f"(관련 자료 연결은 건너뜀: {e})")
 
         st.success("완료! Notion에 저장했습니다.")
         if page_url:
             st.markdown(f"👉 [Notion에서 열기]({page_url})")
 
-        # 화면에도 요약을 보여줍니다.
+        # 화면에도 정리 결과를 보여줍니다.
         st.divider()
         st.subheader(summary.get("title") or "제목 없음")
         meta = " · ".join(x for x in [summary.get("authors"), str(summary.get("year") or ""), summary.get("venue")] if x)
