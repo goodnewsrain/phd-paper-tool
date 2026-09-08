@@ -149,10 +149,20 @@ else:
         _b = _books[_opts.index(_choice) - 1]
         book_title, book_author, existing_book_id = _b["title"], _b["authors"], _b["id"]
         st.caption(f"📖 기존 책에 이어서 추가: **{book_title}**" + (f" — {book_author}" if book_author else ""))
-    book_notes = st.text_area("내 노트 / 메모 (선택)", height=160,
-                              placeholder="이 책을 읽으며 정리한 노트를 붙여넣으세요.")
+    with st.expander("📝 Reading Memo 틀 (복사해서 아래 노트칸에 붙여넣기)"):
+        st.code(
+            "왜 읽었나:\n"
+            "핵심 주장(2–3문장):\n"
+            "핵심 개념:\n"
+            "내 연구와의 연결:\n"
+            "활용 예정(문헌리뷰/이론틀/방법/인용):\n"
+            "의문/질문:",
+            language="text",
+        )
+    book_notes = st.text_area("내 노트 / 메모 (선택)", height=200,
+                              placeholder="위 틀을 복사해 채워도 되고, 자유롭게 적어도 돼요.")
     book_quotes = st.text_area("📌 Kindle 구절 / 인용 (선택)", height=140,
-                               placeholder="킨들에서 복사한 하이라이트를 붙여넣으세요. 자동으로 인용 형식을 만들어요.")
+                               placeholder="킨들 하이라이트를 붙여넣으면 자동 인용. QUOTE:/PARAPHRASE:/MY NOTE: 로 표시하면 구분해서 저장돼요.")
     go = st.button("저장하기", type="primary", use_container_width=True)
 
 with st.expander("🔗 라이브러리 정리 — 관련 논문 다시 연결"):
@@ -186,7 +196,7 @@ if go:
                     quotes = core.format_quotes(client, book_quotes, book_title, book_author, lang_code)
             # 검색용 키워드·한줄요약 색인 (심사 아님)
             index_text = (book_notes + "\n" + " ".join(q.get("quote", "") for q in quotes)).strip()
-            idx = {"tldr": "", "keywords": []}
+            idx = {"citation": "", "tldr": "", "keywords": [], "possible_use": []}
             if index_text:
                 with st.spinner("검색용 키워드 색인 중…"):
                     idx = core.index_notes(client, book_title, book_author, index_text, lang_code)
@@ -211,13 +221,19 @@ if go:
                     with st.spinner("자료 노트로 저장하는 중…"):
                         page = core.save_book(notion, books_db_id, book_title, book_author,
                                               idx["tldr"], idx["keywords"],
-                                              my_notes=book_notes, quotes=quotes)
+                                              my_notes=book_notes, quotes=quotes,
+                                              citation=idx.get("citation", ""),
+                                              possible_use=idx.get("possible_use"))
                         page_url = page.get("url", "")
                     st.success("자료 노트로 저장했어요. (심사 없이 저장 · 키워드로 검색 가능)")
                     if page_url:
                         st.markdown(f"👉 [Notion에서 열기]({page_url})")
+                    if idx.get("citation"):
+                        st.caption("📖 " + idx["citation"])
                     if idx["keywords"]:
                         st.write("🏷️ " + " ".join(f"`{k}`" for k in idx["keywords"]))
+                    if idx.get("possible_use"):
+                        st.write("활용 예정: " + " · ".join(idx["possible_use"]))
                     if idx["tldr"]:
                         st.info(idx["tldr"])
         else:
@@ -267,10 +283,17 @@ if go:
             st.write(" ".join(f"`{k}`" for k in summary["keywords"]))
         if summary.get("tldr"):
             st.info(summary["tldr"])
+        if summary.get("citation"):
+            st.caption("📖 " + summary["citation"])
+        if summary.get("possible_use"):
+            st.write("**활용 예정:** " + " · ".join(summary["possible_use"]))
 
         sections = [
             ("문제 (Problem)", "problem"),
+            ("연구질문 (Research question)", "research_question"),
+            ("이론/틀 (Theory)", "theory"),
             ("방법 (Method)", "method"),
+            ("맥락·대상 (Context)", "context"),
             ("핵심 결과 (Key findings)", "key_findings"),
             ("기여도 (Contribution)", "contribution"),
             ("⚠️ 비판적 검토 (Critical appraisal)", "critical_appraisal"),
@@ -282,6 +305,12 @@ if go:
             if summary.get(key):
                 st.markdown(f"**{heading}**")
                 st.write(summary[key])
+        kq = summary.get("key_quotes") or []
+        if kq:
+            st.markdown("**📌 핵심 인용문 (Key quotes)**")
+            for q in kq:
+                if q.get("quote"):
+                    st.markdown(f"> {q['quote']}  \n_QUOTE · {q.get('page','')}_")
 
     except Exception as e:
         st.error(f"문제가 생겼어요: {e}")

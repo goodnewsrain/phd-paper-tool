@@ -204,6 +204,13 @@ def resolve_input(text: str, uploaded_pdf_bytes: bytes | None) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Claude가 반드시 이 형태(JSON)로만 답하도록 강제하는 스키마입니다.
+_QUOTE_ITEM = {
+    "type": "object",
+    "properties": {"quote": {"type": "string"}, "page": {"type": "string"}},
+    "required": ["quote", "page"],
+    "additionalProperties": False,
+}
+
 SUMMARY_SCHEMA = {
     "type": "object",
     "properties": {
@@ -211,24 +218,30 @@ SUMMARY_SCHEMA = {
         "authors": {"type": "string"},
         "year": {"type": "string"},
         "venue": {"type": "string"},
+        "citation": {"type": "string"},
         "tldr": {"type": "string"},
         "problem": {"type": "string"},
+        "research_question": {"type": "string"},
+        "theory": {"type": "string"},
         "method": {"type": "string"},
+        "context": {"type": "string"},
         "key_findings": {"type": "string"},
         "contribution": {"type": "string"},
         "critical_appraisal": {"type": "string"},
         "use_in_my_work": {"type": "string"},
+        "possible_use": {"type": "array", "items": {"type": "string", "enum": ["Lit review", "Theory", "Method", "Cite"]}},
         "reference_value": {"type": "string"},
         "verdict": {"type": "string"},
+        "key_quotes": {"type": "array", "items": _QUOTE_ITEM},
         "relevance_rating": {"type": "string", "enum": ["High", "Medium", "Low"]},
         "engagement": {"type": "string", "enum": ["Deep read", "Cite", "Skim"]},
         "keywords": {"type": "array", "items": {"type": "string"}},
     },
     "required": [
-        "title", "authors", "year", "venue", "tldr",
-        "problem", "method", "key_findings",
-        "contribution", "critical_appraisal", "use_in_my_work", "reference_value", "verdict",
-        "relevance_rating", "engagement", "keywords",
+        "title", "authors", "year", "venue", "citation",
+        "tldr", "problem", "research_question", "theory", "method", "context", "key_findings",
+        "contribution", "critical_appraisal", "use_in_my_work", "possible_use", "reference_value", "verdict",
+        "key_quotes", "relevance_rating", "engagement", "keywords",
     ],
     "additionalProperties": False,
 }
@@ -272,19 +285,25 @@ Stance:
 - Write the evaluative fields in {lang_name}. Keep bibliographic fields (title, authors, venue) in the paper's ORIGINAL language — do not translate them.
 
 Fields:
+- citation: a complete, correctly formatted APA 7th-edition reference for this work (authors, year, title, source/journal or publisher, DOI/URL). Must be copy-paste ready for a dissertation.
 - tldr: one or two sentences — what the paper is and does.
-- problem: the research problem / question.
+- problem: the research problem the paper addresses.
+- research_question: the paper's specific research question(s), stated or clearly implied.
+- theory: the theoretical framework(s) / key concepts the paper builds on (name the theories and their authors).
 - method: methods, data, sample, and analysis — concretely.
+- context: the empirical context / population / setting (who, where, N).
 - key_findings: the main results / claims, with specifics (numbers, cases).
 - contribution: is the contribution genuinely NOVEL and significant, or incremental / derivative / a repackaging of existing work? Be blunt.
 - critical_appraisal: your SHARP critique — the real methodological, theoretical, and evidentiary weaknesses; blind spots; unexamined assumptions; where the claims outrun the evidence. Point to what in the paper. This is the heart of the review.
 - use_in_my_work: what the student should actually DO with THIS paper — build on it / argue against it / borrow only the method / cite-and-move-past — tied to their specific research questions. Also name the GAP it leaves open that the student's own work could fill.
+- possible_use: where in the dissertation this fits — choose all that apply from "Lit review", "Theory", "Method", "Cite" (empty list if none).
 - reference_value: the student is time-constrained and cannot read everything. SEPARATELY from direct relevance, judge this paper's worth as a RESOURCE TO MINE even if they skip the paper itself — specific cited works, authors, theories, datasets, instruments, or a literature/debate it maps that are worth chasing for the student's research. When you can see the reference list, name concrete items. A paper can be LOW direct relevance yet HIGH reference value ("skip the argument, but its citations to X and Y are directly on your topic"). If there is little to mine, say so plainly. (From an abstract alone you cannot see the bibliography — say so and point only to what the abstract implies.)
 - verdict: your candid overall judgment as chair, in one sharp paragraph — how rigorous is it, how much does it actually deliver, and is it worth the student's time.
+- key_quotes: 2-5 verbatim, quotable sentences from the paper the student may want to cite, EACH with its page in "page" (e.g., "p. 12"). Copy the wording EXACTLY. If the page is unknowable (e.g., abstract only), use "" for page. Only genuinely quote-worthy lines.
 - relevance_rating: relevance to the student's research program — exactly one of "High", "Medium", "Low".
 - engagement: what the student should do with it — exactly one of "Deep read" (worth close study), "Cite" (cite and move on), "Skim" (low priority).
-- keywords: 3-6 short topical tags (no commas inside a tag). Prefer terms that connect to the student's field when accurate to the paper.
-- If a field is genuinely unknown, use an empty string "".
+- keywords: 4-8 CONCEPT tags for a searchable concept index — use the student's research vocabulary where it fits (e.g. institutional whiteness, belonging, organizational culture, minoritized leadership, institutional change, insider-outsider) plus the paper's own key concepts. Short, no commas inside a tag.
+- If a field is genuinely unknown, use an empty string "" (or an empty list []).
 """
     if abstract:
         base += f"\n\nThe full PDF was not available. Review from this abstract and metadata only, and be explicitly cautious about method/evidence claims you cannot verify from an abstract:\n\n{abstract}"
@@ -406,6 +425,14 @@ DB_PROPERTIES = {
     "TLDR": {"rich_text": {}},
     "Tags": {"multi_select": {}},
     "Source": {"url": {}},
+    "Citation": {"rich_text": {}},
+    "Theory": {"rich_text": {}},
+    "Possible Use": {"multi_select": {"options": [
+        {"name": "Lit review", "color": "blue"},
+        {"name": "Theory", "color": "purple"},
+        {"name": "Method", "color": "orange"},
+        {"name": "Cite", "color": "gray"},
+    ]}},
     "Relevance": {
         "select": {
             "options": [
@@ -457,7 +484,14 @@ def ensure_database(notion: NotionClient, parent_page_id: str) -> str:
 BOOKS_DB_PROPERTIES = {
     "Title": {"title": {}},
     "Authors": {"rich_text": {}},
+    "Citation": {"rich_text": {}},
     "Tags": {"multi_select": {}},
+    "Possible Use": {"multi_select": {"options": [
+        {"name": "Lit review", "color": "blue"},
+        {"name": "Theory", "color": "purple"},
+        {"name": "Method", "color": "orange"},
+        {"name": "Cite", "color": "gray"},
+    ]}},
     "TLDR": {"rich_text": {}},
     "Source": {"url": {}},
 }
@@ -518,7 +552,8 @@ def _quote_blocks(quotes: list[dict]) -> list:
         for i in range(0, len(text), 1900):
             blocks.append({"object": "block", "type": "quote",
                            "quote": {"rich_text": [{"type": "text", "text": {"content": text[i:i + 1900]}}]}})
-        cite = (q.get("citation") or "").strip()
+        parts = [p for p in [(q.get("type") or "").strip(), (q.get("citation") or "").strip()] if p]
+        cite = " · ".join(parts)
         if cite:
             blocks.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": [
                 {"type": "text", "text": {"content": cite[:1900]}, "annotations": {"italic": True}}]}})
@@ -562,16 +597,28 @@ def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
     eng = summary.get("engagement")
     if eng in ("Deep read", "Cite", "Skim"):
         properties["Engagement"] = {"select": {"name": eng}}
+    if summary.get("citation"):
+        properties["Citation"] = {"rich_text": [{"type": "text", "text": {"content": summary["citation"][:2000]}}]}
+    if summary.get("theory"):
+        properties["Theory"] = {"rich_text": [{"type": "text", "text": {"content": summary["theory"][:2000]}}]}
+    pu = [x for x in (summary.get("possible_use") or []) if x in ("Lit review", "Theory", "Method", "Cite")]
+    if pu:
+        properties["Possible Use"] = {"multi_select": [{"name": x} for x in pu]}
 
     children: list = []
     if my_notes:
         children += _text_blocks("📝 내 노트 (My notes)", my_notes)
+    if summary.get("citation"):
+        children += _text_blocks("📖 정식 인용 (APA)", summary["citation"])
     if summary.get("tldr"):
         children += _text_blocks("한 줄 요약 (TL;DR)", summary["tldr"])
     # 내용이 있는 항목만 섹션으로 만듭니다 (책 노트는 체어 섹션이 비어 있어 자동으로 생략됨).
     for heading, key in [
         ("문제 (Problem)", "problem"),
+        ("연구질문 (Research question)", "research_question"),
+        ("이론/틀 (Theory)", "theory"),
         ("방법 (Method)", "method"),
+        ("맥락·대상 (Context)", "context"),
         ("핵심 결과 (Key findings)", "key_findings"),
         ("기여도 (Contribution)", "contribution"),
         ("⚠️ 비판적 검토 (Critical appraisal)", "critical_appraisal"),
@@ -581,6 +628,15 @@ def save_to_notion(notion: NotionClient, data_source_id: str, summary: dict,
     ]:
         if (summary.get(key) or "").strip():
             children += _text_blocks(heading, summary[key])
+    # 핵심 인용문 (페이지 포함)
+    kq = [q for q in (summary.get("key_quotes") or []) if (q.get("quote") or "").strip()]
+    if kq:
+        children.append({"object": "block", "type": "heading_2", "heading_2": {
+            "rich_text": [{"type": "text", "text": {"content": "📌 핵심 인용문 (Key quotes)"}}]}})
+        children += _quote_blocks([
+            {"quote": q.get("quote", ""), "citation": ("QUOTE · " + (q.get("page") or "")).strip(" ·")}
+            for q in kq
+        ])
 
     # ── 인용 섹션 (Kindle 구절 등) ──
     if quotes:
@@ -643,10 +699,12 @@ def list_books(notion: NotionClient, books_data_source_id: str) -> list[dict]:
 _INDEX_SCHEMA = {
     "type": "object",
     "properties": {
+        "citation": {"type": "string"},
         "tldr": {"type": "string"},
         "keywords": {"type": "array", "items": {"type": "string"}},
+        "possible_use": {"type": "array", "items": {"type": "string", "enum": ["Lit review", "Theory", "Method", "Cite"]}},
     },
-    "required": ["tldr", "keywords"],
+    "required": ["citation", "tldr", "keywords", "possible_use"],
     "additionalProperties": False,
 }
 
@@ -667,8 +725,10 @@ The student's own notes/quotes:
 </material>
 {prof_block}
 Return:
+- "citation": a complete APA 7th-edition reference for this BOOK (author, year, title, publisher; include edition if the notes mention it). Copy-paste ready; leave uncertain parts minimal rather than inventing.
 - "tldr": ONE neutral sentence describing what this material is about (topic/content only, no judgment), in {lang_name}.
-- "keywords": 4-10 short topical tags for search — concepts, themes, named authors/theories, and terms tied to the student's research. No commas inside a tag."""
+- "keywords": 4-10 CONCEPT tags for search — concepts, themes, named authors/theories, and the student's research vocabulary. No commas inside a tag.
+- "possible_use": where this fits in the dissertation — any of "Lit review", "Theory", "Method", "Cite" (empty list if unclear). Neutral classification, not a critique."""
     resp = client.messages.create(
         model=MODEL,
         max_tokens=2000,
@@ -677,12 +737,13 @@ Return:
     )
     out = next((b.text for b in resp.content if b.type == "text"), "{}")
     d = json.loads(out)
-    return {"tldr": d.get("tldr", ""), "keywords": d.get("keywords", [])}
+    return {"citation": d.get("citation", ""), "tldr": d.get("tldr", ""),
+            "keywords": d.get("keywords", []), "possible_use": d.get("possible_use", [])}
 
 
 def save_book(notion: NotionClient, books_data_source_id: str, title: str, author: str,
               tldr: str, keywords: list, my_notes: str = "", quotes: list | None = None,
-              source_url: str = "") -> dict:
+              source_url: str = "", citation: str = "", possible_use: list | None = None) -> dict:
     """책/자료 노트를 자료 DB에 저장합니다 (심사 없이, 검색·키워드 중심)."""
     props = {
         "Title": {"title": [{"type": "text", "text": {"content": (title or "제목 없음")[:2000]}}]},
@@ -690,9 +751,16 @@ def save_book(notion: NotionClient, books_data_source_id: str, title: str, autho
         "TLDR": {"rich_text": [{"type": "text", "text": {"content": (tldr or "")[:2000]}}]},
         "Tags": {"multi_select": [{"name": _clean_tag(k)} for k in (keywords or []) if _clean_tag(k)]},
     }
+    if citation:
+        props["Citation"] = {"rich_text": [{"type": "text", "text": {"content": citation[:2000]}}]}
+    pu = [x for x in (possible_use or []) if x in ("Lit review", "Theory", "Method", "Cite")]
+    if pu:
+        props["Possible Use"] = {"multi_select": [{"name": x} for x in pu]}
     if source_url:
         props["Source"] = {"url": source_url}
     children: list = []
+    if citation:
+        children += _text_blocks("📖 정식 인용 (APA)", citation)
     if (my_notes or "").strip():
         children += _text_blocks("📝 내 노트 (My notes)", my_notes)
     if quotes:
@@ -723,8 +791,12 @@ _QUOTES_SCHEMA = {
     "type": "object",
     "properties": {"quotes": {"type": "array", "items": {
         "type": "object",
-        "properties": {"quote": {"type": "string"}, "citation": {"type": "string"}},
-        "required": ["quote", "citation"],
+        "properties": {
+            "quote": {"type": "string"},
+            "type": {"type": "string", "enum": ["QUOTE", "PARAPHRASE", "MY NOTE"]},
+            "citation": {"type": "string"},
+        },
+        "required": ["quote", "type", "citation"],
         "additionalProperties": False,
     }}},
     "required": ["quotes"],
@@ -749,7 +821,8 @@ Raw pasted text:
 
 Split this into individual quotes. For EACH quote return:
 - "quote": the verbatim passage, exactly as written. Strip Kindle boilerplate (e.g. "Excerpt From", copyright notices, app chrome), but do NOT alter the passage wording.
-- "citation": a clean scholarly citation for that passage — author, title, and the page number or Kindle location if it appears in the pasted text (e.g. "Jung Young Lee, Marginality, loc. 1234" or "..., p. 57"). If no location/page is present, cite author and title only. Write any citation labels in {lang_name}; keep author/title in their original language.
+- "type": one of "QUOTE" (the author's exact words), "PARAPHRASE" (the student's restatement), or "MY NOTE" (the student's own idea/reaction). Detect from any labels the student wrote (lines starting with QUOTE:/PARAPHRASE:/MY NOTE:); if unlabeled, a copied highlight is "QUOTE".
+- "citation": a clean citation — author, title, and the page number or Kindle location if it appears in the pasted text (e.g. "Jung Young Lee, Marginality, loc. 1234" or "..., p. 57"). If no location/page is present, cite author and title only. Keep author/title in their original language.
 
 If the pasted text is a single quote, return a one-item list. Return an empty list only if there is no quotable passage."""
     resp = client.messages.create(
