@@ -121,7 +121,7 @@ except Exception as e:
 
 # ── 입력 ────────────────────────────────────────────────────────────────────
 st.divider()
-mode = st.radio("무엇을 추가할까요?", ["📄 논문", "📖 책 (내 노트)"], horizontal=True)
+mode = st.radio("무엇을 추가할까요?", ["📄 논문", "📖 책 (내 노트)", "📝 리딩 메모"], horizontal=True)
 language = st.radio("정리 언어", ["한국어", "English"], horizontal=True)
 lang_code = "ko" if language == "한국어" else "en"
 
@@ -130,11 +130,13 @@ uploaded = None
 book_title = book_author = book_notes = book_quotes = ""
 existing_book_id = None
 books_db_id = ""
+memo = {}
+memo_quotes = ""
 if mode == "📄 논문":
     identifier = st.text_input("arXiv ID · arXiv 링크 · DOI", placeholder="예: 2401.12345  또는  10.1145/3593013.3594001")
     uploaded = st.file_uploader("또는 PDF 파일 업로드", type=["pdf"])
     go = st.button("요약하기", type="primary", use_container_width=True)
-else:
+elif mode == "📖 책 (내 노트)":
     books_db_id = get_or_create_books_db()
     try:
         _books = core.list_books(core.make_notion_client(cfg["notion_token"]), books_db_id)
@@ -164,6 +166,31 @@ else:
     book_quotes = st.text_area("📌 Kindle 구절 / 인용 (선택)", height=140,
                                placeholder="킨들 하이라이트를 붙여넣으면 자동 인용. QUOTE:/PARAPHRASE:/MY NOTE: 로 표시하면 구분해서 저장돼요.")
     go = st.button("저장하기", type="primary", use_container_width=True)
+else:  # 📝 리딩 메모 (직접 작성)
+    books_db_id = get_or_create_books_db()
+    st.caption("Doctoral 1-Page Reading Memo — 직접 작성해서 Notion 자료 DB에 저장해요.")
+    memo["title"] = st.text_input("제목", placeholder="예: Ray (2019) A Theory of Racialized Organizations")
+    memo["citation"] = st.text_area("Full APA 인용 (Zotero에서 복사)", height=68,
+                                    placeholder="Ray, V. (2019). A theory of racialized organizations. American Sociological Review, 84(1), 26–53.")
+    _c1, _c2 = st.columns(2)
+    with _c1:
+        memo["source_type"] = st.selectbox("종류", ["Article", "Book", "Chapter", "Other"])
+    with _c2:
+        memo["date_course"] = st.text_input("Date / Course / Project", placeholder="2026 Fall / LEI 700")
+    memo["tags"] = st.text_input("연구 태그 (3–6개, 쉼표로)", placeholder="institutional whiteness, belonging, governance")
+    memo["purpose"] = st.text_area("1. 왜 읽었나 (연구 목적)", height=68,
+                                   placeholder="어떤 질문을 갖고 읽었나? 내 학위논문에 왜 중요한가? (1–2문장)")
+    memo["problem"] = st.text_area("2. 문제 (저자가 다루는 문제)", height=68)
+    memo["argument"] = st.text_area("2. 저자의 주장 (내 말로, 2–3문장)", height=90)
+    memo["concepts"] = st.text_area("3. 핵심 개념 / 틀 (개념 + 한 줄 뜻)", height=90)
+    memo_quotes = st.text_area("4. 증거 / 인용 (나중에 찾아 쓸 것)", height=140,
+                               placeholder='QUOTE: "원문" (p. 26)\nPARAPHRASE: 내 요약 (p. 30)\nMY NOTE: 내 생각\n— 각 줄에 페이지를 꼭 남기세요.')
+    memo["connection"] = st.text_area("5. 내 연구 연결 (support / challenge / complicate)", height=90)
+    memo["conversation"] = st.text_area("5. 학문적 대화 (관련 저자·개념, 동의/긴장)", height=68)
+    memo["critique"] = st.text_area("6. 비판 / 의문 (빠진 것·전제·한계)", height=90)
+    memo["possible_use"] = st.multiselect("6. 활용 예정",
+                                          ["Lit Review", "Theory", "Conceptual Framework", "Methods", "Discussion", "Teaching", "Other"])
+    go = st.button("리딩 메모 저장", type="primary", use_container_width=True)
 
 with st.expander("🔗 라이브러리 정리 — 관련 논문 다시 연결"):
     st.caption("저장된 모든 논문을 다시 스캔해 관련 논문끼리 연결해요. 논문 수만큼 시간·비용이 들어요.")
@@ -236,6 +263,20 @@ if go:
                         st.write("활용 예정: " + " · ".join(idx["possible_use"]))
                     if idx["tldr"]:
                         st.info(idx["tldr"])
+        elif mode == "📝 리딩 메모":
+            if not (memo.get("title", "").strip() or memo.get("citation", "").strip()):
+                st.error("제목이나 인용 중 하나는 입력해 주세요.")
+            else:
+                quotes = []
+                if memo_quotes.strip():
+                    with st.spinner("증거/인용을 정리하는 중…"):
+                        quotes = core.format_quotes(client, memo_quotes, memo.get("title", ""), "", lang_code)
+                with st.spinner("리딩 메모를 저장하는 중…"):
+                    page = core.save_reading_memo(notion, books_db_id, memo, quotes)
+                    page_url = page.get("url", "")
+                st.success("리딩 메모를 저장했어요. (자료 DB · 키워드로 검색)")
+                if page_url:
+                    st.markdown(f"👉 [Notion에서 열기]({page_url})")
         else:
             with st.spinner("논문을 가져오는 중…"):
                 resolved = core.resolve_input(identifier, uploaded.getvalue() if uploaded else None)

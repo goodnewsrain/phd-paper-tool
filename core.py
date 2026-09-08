@@ -773,6 +773,48 @@ def save_book(notion: NotionClient, books_data_source_id: str, title: str, autho
     )
 
 
+def save_reading_memo(notion: NotionClient, books_data_source_id: str, memo: dict,
+                      quotes: list | None = None) -> dict:
+    """1-Page Reading Memo(직접 작성)를 자료 DB에 저장합니다."""
+    title = (memo.get("title") or memo.get("citation") or "Reading Memo").strip()[:120]
+    tags = [_clean_tag(t) for t in re.split(r"[,\n]", memo.get("tags", "")) if _clean_tag(t)]
+    props = {
+        "Title": {"title": [{"type": "text", "text": {"content": title[:2000]}}]},
+        "Citation": {"rich_text": [{"type": "text", "text": {"content": (memo.get("citation") or "")[:2000]}}]},
+        "Tags": {"multi_select": [{"name": t} for t in tags]},
+        "TLDR": {"rich_text": [{"type": "text", "text": {"content": (memo.get("argument") or memo.get("purpose") or "")[:2000]}}]},
+    }
+    pu = [x for x in (memo.get("possible_use") or []) if x]
+    if pu:
+        props["Possible Use"] = {"multi_select": [{"name": x} for x in pu]}
+
+    children: list = []
+    if memo.get("citation"):
+        children += _text_blocks("📖 정식 인용 (APA)", memo["citation"])
+    info = " · ".join(x for x in [memo.get("source_type"), memo.get("date_course")] if x)
+    if info:
+        children += _text_blocks("자료 정보 (Date / Course / Project)", info)
+    for heading, key in [
+        ("1. 왜 읽었나 (Research purpose)", "purpose"),
+        ("2. 문제 (Problem)", "problem"),
+        ("2. 저자의 주장 (Argument, 내 말로)", "argument"),
+        ("3. 핵심 개념 / 틀 (Key concepts)", "concepts"),
+        ("5. 내 연구 연결 (Connection)", "connection"),
+        ("5. 학문적 대화 (Scholarly conversation)", "conversation"),
+        ("6. 비판 / 의문 (Critique / question)", "critique"),
+    ]:
+        if (memo.get(key) or "").strip():
+            children += _text_blocks(heading, memo[key])
+    if quotes:
+        children.append({"object": "block", "type": "heading_2", "heading_2": {
+            "rich_text": [{"type": "text", "text": {"content": "4. 📌 증거 / 인용 (Evidence to retrieve)"}}]}})
+        children += _quote_blocks(quotes)
+    return notion.pages.create(
+        parent={"type": "data_source_id", "data_source_id": books_data_source_id},
+        properties=props, children=children,
+    )
+
+
 def add_keywords_to_page(notion: NotionClient, page_id: str, keywords: list) -> None:
     """기존 페이지의 Tags에 새 키워드를 합칩니다 (중복 제거)."""
     if not keywords:
